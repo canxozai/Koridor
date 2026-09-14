@@ -236,6 +236,37 @@
             background: rgba(255,255,255,0.06);
         }
 
+        .difficulty-group {
+            display: flex;
+            gap: 8px;
+            margin: 6px 0 10px;
+        }
+        .diff-btn {
+            flex: 1;
+            font-family: 'Inter', system-ui, sans-serif;
+            font-size: 0.8rem;
+            font-weight: 600;
+            padding: 9px 6px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: #8b949e;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-align: center;
+        }
+        .diff-btn:hover {
+            background: rgba(255, 255, 255, 0.08);
+            color: #e0e6f0;
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+        .diff-btn.active {
+            background: rgba(255, 255, 255, 0.12);
+            color: #ffffff;
+            border-color: rgba(255, 255, 255, 0.35);
+            box-shadow: 0 0 12px rgba(255, 255, 255, 0.06);
+        }
+
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
@@ -638,7 +669,19 @@
         <!-- ══════════ LOBBY SCREEN ══════════ -->
         <div id="lobby">
             <div class="lobby-card">
-                <h2>⚔️ Oda Oluştur</h2>
+                <h2>Bilgisayara Karşı Oyna</h2>
+                <div class="difficulty-group">
+                    <button type="button" class="diff-btn active" data-diff="easy">Kolay</button>
+                    <button type="button" class="diff-btn" data-diff="medium">Orta</button>
+                    <button type="button" class="diff-btn" data-diff="hard">Zor</button>
+                </div>
+                <button class="btn primary" id="btn-start-ai" style="width:100%">Oyunu Başlat</button>
+            </div>
+
+            <div class="lobby-or">VEYA ÇEVRİMİÇİ OYNA</div>
+
+            <div class="lobby-card">
+                <h2>Oda Oluştur</h2>
                 <p>Yeni bir oda oluştur ve arkadaşına oda kodunu gönder.</p>
                 <button class="btn primary" id="btn-create" style="width:100%">Oda Oluştur</button>
                 <div id="room-created" class="hidden">
@@ -654,7 +697,7 @@
             <div class="lobby-or">VEYA</div>
 
             <div class="lobby-card">
-                <h2>🎯 Odaya Katıl</h2>
+                <h2>Odaya Katıl</h2>
                 <p>Arkadaşının gönderdiği oda kodunu gir.</p>
                 <div class="lobby-input-group">
                     <input type="text" class="lobby-input" id="join-code-input" placeholder="Oda kodunu gir..." maxlength="10" autocomplete="off" spellcheck="false">
@@ -719,10 +762,12 @@
 
     <div id="game-over">
         <div class="game-over-content">
-            <div class="trophy">🏆</div>
             <h2 id="winner-text"></h2>
             <p class="winner-sub" id="winner-sub"></p>
-            <button class="btn primary" id="btn-new-game">Lobiye Dön</button>
+            <div style="display:flex; gap:10px; width:100%;">
+                <button class="btn primary" id="btn-play-again" style="flex:1;">Tekrar Oyna</button>
+                <button class="btn" id="btn-new-game" style="flex:1;">Lobiye Dön</button>
+            </div>
         </div>
     </div>
 
@@ -738,7 +783,12 @@
         const UNIT = CELL + GAP;
         const GRID = 17;
 
-        /* ═══════════════════ NETWORK STATE ═══════════════════ */
+        /* ═══════════════════ NETWORK & GAME MODE STATE ═══════════════════ */
+        let gameMode = 'online'; // 'online' | 'ai'
+        let aiDifficulty = 'easy'; // 'easy' | 'medium' | 'hard'
+        let isAIThinking = false;
+        let aiTimer = null;
+        const aiColor = 'black';
         let peer = null;
         let conn = null;
         let myColor = null;   // 'white' or 'black'
@@ -767,6 +817,22 @@
         let whitePawnEl, blackPawnEl;
 
         /* ═══════════════════ LOBBY LOGIC ═══════════════════ */
+        let selectedDifficulty = 'easy';
+        document.querySelectorAll('.diff-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.diff-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                selectedDifficulty = btn.dataset.diff;
+            });
+        });
+
+        document.getElementById('btn-start-ai').addEventListener('click', () => {
+            gameMode = 'ai';
+            aiDifficulty = selectedDifficulty;
+            myColor = 'white';
+            startGame();
+        });
+
         function generateRoomCode() {
             const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
             let code = '';
@@ -775,6 +841,7 @@
         }
 
         document.getElementById('btn-create').addEventListener('click', () => {
+            gameMode = 'online';
             roomId = generateRoomCode();
             const peerId = 'koridor-' + roomId;
             isHost = true;
@@ -825,6 +892,7 @@
         });
 
         function joinRoom() {
+            gameMode = 'online';
             const code = document.getElementById('join-code-input').value.trim().toUpperCase();
             if (!code) {
                 document.getElementById('join-status').className = 'lobby-status error';
@@ -945,6 +1013,9 @@
         function startGame() {
             state = createInitialState();
 
+            if (aiTimer) { clearTimeout(aiTimer); aiTimer = null; }
+            isAIThinking = false;
+
             // Show game, hide lobby
             document.getElementById('lobby').classList.add('hidden');
             document.getElementById('game-screen').classList.remove('hidden');
@@ -953,10 +1024,23 @@
             document.getElementById('you-white').classList.toggle('hidden', myColor !== 'white');
             document.getElementById('you-black').classList.toggle('hidden', myColor !== 'black');
 
-            // Connection badge
+            // Player names and connection badge
+            const blackNameEl = document.querySelector('#card-black .player-name');
+            const whiteNameEl = document.querySelector('#card-white .player-name');
             const badge = document.getElementById('conn-badge');
-            badge.className = 'conn-badge';
-            badge.innerHTML = '<div class="dot"></div><span>Bağlı</span>';
+
+            if (gameMode === 'ai') {
+                const diffNames = { easy: 'Kolay', medium: 'Orta', hard: 'Zor' };
+                blackNameEl.textContent = `Bilgisayar (${diffNames[aiDifficulty]})`;
+                whiteNameEl.textContent = 'Beyaz';
+                badge.className = 'conn-badge';
+                badge.innerHTML = '<div class="dot"></div><span>Yapay Zeka</span>';
+            } else {
+                blackNameEl.textContent = 'Siyah';
+                whiteNameEl.textContent = 'Beyaz';
+                badge.className = 'conn-badge';
+                badge.innerHTML = '<div class="dot"></div><span>Bağlı</span>';
+            }
 
             createBoardDOM();
             createPawns();
@@ -1021,18 +1105,40 @@
             document.getElementById('btn-h').addEventListener('click', () => setOrientation('horizontal'));
             document.getElementById('btn-v').addEventListener('click', () => setOrientation('vertical'));
             document.getElementById('btn-new-game').addEventListener('click', returnToLobby);
+            document.getElementById('btn-play-again').addEventListener('click', () => {
+                document.getElementById('game-over').classList.remove('show');
+                const confetti = document.getElementById('confetti-canvas');
+                if (confetti) confetti.remove();
+                if (gameMode === 'ai') {
+                    startGame();
+                } else {
+                    if (conn && conn.open) {
+                        conn.send({ type: 'rematch' });
+                        state = createInitialState();
+                        render();
+                    } else {
+                        returnToLobby();
+                    }
+                }
+            });
             document.addEventListener('keydown', onKeyDown);
         }
 
         /* ═══════════════════ IS MY TURN? ═══════════════════ */
         function isMyTurn() {
+            if (gameMode === 'ai') {
+                return state.turn === myColor && !isAIThinking;
+            }
             return state.turn === myColor;
         }
 
         /* ═══════════════════ EVENT HANDLERS ═══════════════════ */
         function onBoardClick(e) {
             if (state.gameOver || !isMyTurn()) {
-                if (!isMyTurn() && !state.gameOver) showStatus('Rakibin sırasını bekle!');
+                if (!isMyTurn() && !state.gameOver) {
+                    if (isAIThinking) showStatus('Bilgisayar düşünüyor...');
+                    else showStatus('Rakibin sırasını bekle!');
+                }
                 return;
             }
 
@@ -1089,12 +1195,18 @@
             state.pawns[state.turn].col = c;
             clearStatus();
 
-            // Send move to opponent
-            sendMove(state.turn, r, c);
+            // Send move to opponent if online
+            if (gameMode === 'online') {
+                sendMove(state.turn, r, c);
+            }
 
             if (checkWin()) return;
             switchTurn();
             render();
+
+            if (gameMode === 'ai' && state.turn === aiColor && !state.gameOver) {
+                triggerAIMove();
+            }
         }
 
         function handleWallPlace(ir, ic, orientation) {
@@ -1109,12 +1221,18 @@
             clearStatus();
             clearWallPreview();
 
-            // Send wall to opponent
-            sendWall(state.turn, ir, ic, orientation);
+            // Send wall to opponent if online
+            if (gameMode === 'online') {
+                sendWall(state.turn, ir, ic, orientation);
+            }
 
             switchTurn();
             state.mode = 'move';
             render();
+
+            if (gameMode === 'ai' && state.turn === aiColor && !state.gameOver) {
+                triggerAIMove();
+            }
         }
 
         function switchTurn() { state.turn = state.turn === 'white' ? 'black' : 'white'; }
@@ -1136,9 +1254,15 @@
 
             const youWon = winner === myColor;
             text.textContent = youWon ? 'Kazandın!' : 'Kaybettin!';
-            sub.textContent = youWon
-                ? 'Tebrikler, rakibinin bölgesine ulaştın!'
-                : 'Rakibin senin bölgene ulaştı.';
+            if (gameMode === 'ai') {
+                sub.textContent = youWon
+                    ? 'Tebrikler, bilgisayarı mağlup ettin!'
+                    : 'Bilgisayar hedefine senden önce ulaştı.';
+            } else {
+                sub.textContent = youWon
+                    ? 'Tebrikler, rakibinin bölgesine ulaştın!'
+                    : 'Rakibin senin bölgene ulaştı.';
+            }
 
             setTimeout(() => {
                 overlay.classList.add('show');
@@ -1151,11 +1275,15 @@
             const confetti = document.getElementById('confetti-canvas');
             if (confetti) confetti.remove();
 
+            if (aiTimer) { clearTimeout(aiTimer); aiTimer = null; }
+            isAIThinking = false;
+
             // Close connection
             if (conn) conn.close();
             if (peer) peer.destroy();
             peer = null; conn = null;
             myColor = null; isHost = false; roomId = null;
+            gameMode = 'online';
 
             state = createInitialState();
 
@@ -1285,6 +1413,8 @@
             const el = document.getElementById('turn-text');
             if (state.gameOver) {
                 el.innerHTML = state.winner === myColor ? 'Kazandın!' : 'Kaybettin!';
+            } else if (isAIThinking) {
+                el.innerHTML = 'Bilgisayar<br>Düşünüyor';
             } else if (isMyTurn()) {
                 el.innerHTML = 'Senin<br>Sıran';
             } else {
@@ -1353,10 +1483,11 @@
             return false;
         }
 
-        function canPlaceWall(ir, ic, orientation) {
-            if (state.wallCounts[state.turn] <= 0) return false;
+        function canPlaceWall(ir, ic, orientation, playerOverride) {
+            const player = playerOverride || state.turn;
+            if (state.wallCounts[player] <= 0) return false;
             if (ir < 0 || ir > 7 || ic < 0 || ic > 7) return false;
-            const nw = { row: ir, col: ic, orientation, player: state.turn };
+            const nw = { row: ir, col: ic, orientation, player };
             if (wallConflicts(nw)) return false;
             state.walls.push(nw);
             const ok = hasPathToGoal(state.pawns.white.row, state.pawns.white.col, 0)
@@ -1393,6 +1524,260 @@
                 }
             }
             return false;
+        }
+
+        /* ═══════════════════ AI LOGIC & PATHFINDING ═══════════════════ */
+        function getShortestPath(startRow, startCol, goalRow) {
+            const visited = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
+            const parent = new Int16Array(BOARD_SIZE * BOARD_SIZE).fill(-1);
+            const queue = [[startRow, startCol]];
+            const startIdx = startRow * BOARD_SIZE + startCol;
+            visited[startIdx] = 1;
+            let targetIdx = -1;
+
+            while (queue.length > 0) {
+                const [r, c] = queue.shift();
+                if (r === goalRow) {
+                    targetIdx = r * BOARD_SIZE + c;
+                    break;
+                }
+                for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+                    const nr = r + dr, nc = c + dc;
+                    if (nr < 0 || nr >= BOARD_SIZE || nc < 0 || nc >= BOARD_SIZE) continue;
+                    const idx = nr * BOARD_SIZE + nc;
+                    if (visited[idx]) continue;
+                    if (isBlockedByWall(r, c, nr, nc)) continue;
+                    visited[idx] = 1;
+                    parent[idx] = r * BOARD_SIZE + c;
+                    queue.push([nr, nc]);
+                }
+            }
+
+            if (targetIdx === -1) return null;
+
+            const path = [];
+            let curr = targetIdx;
+            while (curr !== -1) {
+                path.unshift({ row: Math.floor(curr / BOARD_SIZE), col: curr % BOARD_SIZE });
+                if (curr === startIdx) break;
+                curr = parent[curr];
+            }
+            return path;
+        }
+
+        function getPathDistance(startRow, startCol, goalRow) {
+            const path = getShortestPath(startRow, startCol, goalRow);
+            return path ? path.length - 1 : 999;
+        }
+
+        function triggerAIMove() {
+            isAIThinking = true;
+            render();
+
+            if (aiTimer) clearTimeout(aiTimer);
+            aiTimer = setTimeout(() => {
+                if (state.gameOver || gameMode !== 'ai' || state.turn !== aiColor) {
+                    isAIThinking = false;
+                    render();
+                    return;
+                }
+
+                const move = getAIMove(aiDifficulty);
+                isAIThinking = false;
+
+                if (!move) {
+                    const validMoves = getValidMoves(aiColor);
+                    if (validMoves.length > 0) {
+                        state.pawns[aiColor].row = validMoves[0][0];
+                        state.pawns[aiColor].col = validMoves[0][1];
+                    }
+                } else if (move.type === 'move') {
+                    state.pawns[aiColor].row = move.row;
+                    state.pawns[aiColor].col = move.col;
+                } else if (move.type === 'wall') {
+                    state.walls.push({
+                        row: move.row,
+                        col: move.col,
+                        orientation: move.orientation,
+                        player: aiColor
+                    });
+                    state.wallCounts[aiColor]--;
+                }
+
+                if (checkWin()) return;
+                switchTurn();
+                render();
+            }, 500);
+        }
+
+        function getAIMove(diff) {
+            const validMoves = getValidMoves(aiColor);
+            if (validMoves.length === 0) return null;
+
+            // Direct winning move if available
+            const winMove = validMoves.find(m => m[0] === 8);
+            if (winMove) return { type: 'move', row: winMove[0], col: winMove[1] };
+
+            const myR = state.pawns[aiColor].row, myC = state.pawns[aiColor].col;
+            const oppR = state.pawns.white.row, oppC = state.pawns.white.col;
+            const currMyDist = getPathDistance(myR, myC, 8);
+            const currHumanDist = getPathDistance(oppR, oppC, 0);
+
+            if (diff === 'easy') {
+                // 20% random valid wall if available
+                if (state.wallCounts[aiColor] > 0 && Math.random() < 0.20) {
+                    const candidateWalls = [];
+                    for (let r = 0; r < 8; r++) {
+                        for (let c = 0; c < 8; c++) {
+                            for (const o of ['horizontal', 'vertical']) {
+                                if (canPlaceWall(r, c, o, aiColor)) {
+                                    candidateWalls.push({ row: r, col: c, orientation: o });
+                                }
+                            }
+                        }
+                    }
+                    if (candidateWalls.length > 0) {
+                        return { type: 'wall', ...candidateWalls[Math.floor(Math.random() * candidateWalls.length)] };
+                    }
+                }
+
+                // 80% best pawn move towards goal, 20% random valid move
+                if (Math.random() < 0.80) {
+                    let bestDist = 999;
+                    let bestMoves = [];
+                    for (const [mr, mc] of validMoves) {
+                        const d = getPathDistance(mr, mc, 8);
+                        if (d < bestDist) {
+                            bestDist = d;
+                            bestMoves = [[mr, mc]];
+                        } else if (d === bestDist) {
+                            bestMoves.push([mr, mc]);
+                        }
+                    }
+                    const pick = bestMoves[Math.floor(Math.random() * bestMoves.length)];
+                    return { type: 'move', row: pick[0], col: pick[1] };
+                } else {
+                    const pick = validMoves[Math.floor(Math.random() * validMoves.length)];
+                    return { type: 'move', row: pick[0], col: pick[1] };
+                }
+            }
+
+            if (diff === 'medium') {
+                // If human is leading or close to goal, consider placing an effective wall
+                if (state.wallCounts[aiColor] > 0 && (currHumanDist <= currMyDist || currHumanDist <= 4) && Math.random() < 0.75) {
+                    let bestGain = 0;
+                    const topWalls = [];
+
+                    for (let r = 0; r < 8; r++) {
+                        for (let c = 0; c < 8; c++) {
+                            for (const o of ['horizontal', 'vertical']) {
+                                if (!canPlaceWall(r, c, o, aiColor)) continue;
+                                state.walls.push({ row: r, col: c, orientation: o, player: aiColor });
+                                const newHumanDist = getPathDistance(oppR, oppC, 0);
+                                const newMyDist = getPathDistance(myR, myC, 8);
+                                state.walls.pop();
+
+                                const delay = newHumanDist - currHumanDist;
+                                const selfCost = newMyDist - currMyDist;
+
+                                if (delay > 0 && selfCost <= 1) {
+                                    const gain = delay * 2 - selfCost;
+                                    if (gain > bestGain) {
+                                        bestGain = gain;
+                                        topWalls.length = 0;
+                                        topWalls.push({ row: r, col: c, orientation: o });
+                                    } else if (gain === bestGain) {
+                                        topWalls.push({ row: r, col: c, orientation: o });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (topWalls.length > 0 && bestGain >= 2) {
+                        return { type: 'wall', ...topWalls[Math.floor(Math.random() * topWalls.length)] };
+                    }
+                }
+
+                // Default: Best pawn move
+                let bestDist = 999;
+                let bestMoves = [];
+                for (const [mr, mc] of validMoves) {
+                    const d = getPathDistance(mr, mc, 8);
+                    if (d < bestDist) {
+                        bestDist = d;
+                        bestMoves = [[mr, mc]];
+                    } else if (d === bestDist) {
+                        bestMoves.push([mr, mc]);
+                    }
+                }
+                const pick = bestMoves[Math.floor(Math.random() * bestMoves.length)];
+                return { type: 'move', row: pick[0], col: pick[1] };
+            }
+
+            // 'hard' difficulty
+            let bestMove = null;
+            let bestScore = -99999;
+
+            // 1. Evaluate all valid pawn moves
+            for (const [mr, mc] of validMoves) {
+                const d = getPathDistance(mr, mc, 8);
+                let score = (currHumanDist - d) * 10 + (mr - myR) * 2;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestMove = { type: 'move', row: mr, col: mc };
+                }
+            }
+
+            // 2. Evaluate strategic walls
+            if (state.wallCounts[aiColor] > 0) {
+                const humanPath = getShortestPath(oppR, oppC, 0);
+                const candidateCoords = new Set();
+                if (humanPath) {
+                    for (const pt of humanPath) {
+                        for (let dr = -1; dr <= 1; dr++) {
+                            for (let dc = -1; dc <= 1; dc++) {
+                                const ir = pt.row + dr, ic = pt.col + dc;
+                                if (ir >= 0 && ir < 8 && ic >= 0 && ic < 8) {
+                                    candidateCoords.add(`${ir},${ic}`);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for (const coord of candidateCoords) {
+                    const [ir, ic] = coord.split(',').map(Number);
+                    for (const o of ['horizontal', 'vertical']) {
+                        if (!canPlaceWall(ir, ic, o, aiColor)) continue;
+                        state.walls.push({ row: ir, col: ic, orientation: o, player: aiColor });
+                        const newHumanDist = getPathDistance(oppR, oppC, 0);
+                        const newMyDist = getPathDistance(myR, myC, 8);
+                        state.walls.pop();
+
+                        const humanDelay = newHumanDist - currHumanDist;
+                        const myPenalty = newMyDist - currMyDist;
+
+                        if (humanDelay <= 0 || myPenalty > humanDelay) continue;
+
+                        let wallScore = (newHumanDist - newMyDist) * 10 + humanDelay * 15 - myPenalty * 20;
+
+                        if (currHumanDist <= 2) wallScore += 50;
+                        else if (currHumanDist <= 3) wallScore += 25;
+
+                        if (currMyDist + 2 < currHumanDist && currHumanDist > 3) {
+                            wallScore -= 15;
+                        }
+
+                        if (wallScore > bestScore + 4) {
+                            bestScore = wallScore;
+                            bestMove = { type: 'wall', row: ir, col: ic, orientation: o };
+                        }
+                    }
+                }
+            }
+
+            return bestMove || { type: 'move', row: validMoves[0][0], col: validMoves[0][1] };
         }
 
         /* ═══════════════════ CONFETTI ═══════════════════ */
