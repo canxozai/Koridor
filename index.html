@@ -678,6 +678,12 @@
                 <button class="btn primary" id="btn-start-ai" style="width:100%">Oyunu Başlat</button>
             </div>
 
+            <div class="lobby-card">
+                <h2>Aynı Cihazda Oyna (1v1)</h2>
+                <p>İki kişi aynı bilgisayar üzerinden sıra ile hamle yaparak karşılıklı oynayın.</p>
+                <button class="btn primary" id="btn-start-local" style="width:100%">1v1 Başlat</button>
+            </div>
+
             <div class="lobby-or">VEYA ÇEVRİMİÇİ OYNA</div>
 
             <div class="lobby-card">
@@ -784,7 +790,7 @@
         const GRID = 17;
 
         /* ═══════════════════ NETWORK & GAME MODE STATE ═══════════════════ */
-        let gameMode = 'online'; // 'online' | 'ai'
+        let gameMode = 'online'; // 'online' | 'ai' | 'local'
         let aiDifficulty = 'easy'; // 'easy' | 'medium' | 'hard'
         let isAIThinking = false;
         let aiTimer = null;
@@ -831,6 +837,12 @@
             gameMode = 'ai';
             aiDifficulty = selectedDifficulty;
             myColor = 'white';
+            startGame();
+        });
+
+        document.getElementById('btn-start-local').addEventListener('click', () => {
+            gameMode = 'local';
+            myColor = null;
             startGame();
         });
 
@@ -1087,8 +1099,8 @@
             document.getElementById('game-screen').classList.remove('hidden');
 
             // Show "SEN" tag
-            document.getElementById('you-white').classList.toggle('hidden', myColor !== 'white');
-            document.getElementById('you-black').classList.toggle('hidden', myColor !== 'black');
+            document.getElementById('you-white').classList.toggle('hidden', gameMode === 'local' || myColor !== 'white');
+            document.getElementById('you-black').classList.toggle('hidden', gameMode === 'local' || myColor !== 'black');
 
             // Player names and connection badge
             const blackNameEl = document.querySelector('#card-black .player-name');
@@ -1101,6 +1113,11 @@
                 whiteNameEl.textContent = 'Beyaz';
                 badge.className = 'conn-badge';
                 badge.innerHTML = '<div class="dot"></div><span>Yapay Zeka</span>';
+            } else if (gameMode === 'local') {
+                blackNameEl.textContent = 'Siyah';
+                whiteNameEl.textContent = 'Beyaz';
+                badge.className = 'conn-badge';
+                badge.innerHTML = '<div class="dot"></div><span>Yerel 1v1</span>';
             } else {
                 blackNameEl.textContent = 'Siyah';
                 whiteNameEl.textContent = 'Beyaz';
@@ -1182,7 +1199,7 @@
                 document.getElementById('game-over').classList.remove('show');
                 const confetti = document.getElementById('confetti-canvas');
                 if (confetti) confetti.remove();
-                if (gameMode === 'ai') {
+                if (gameMode === 'ai' || gameMode === 'local') {
                     startRematch();
                 } else {
                     if (conn && conn.open) {
@@ -1204,6 +1221,9 @@
 
         /* ═══════════════════ IS MY TURN? ═══════════════════ */
         function isMyTurn() {
+            if (gameMode === 'local') {
+                return true;
+            }
             if (gameMode === 'ai') {
                 return state.turn === myColor && !isAIThinking;
             }
@@ -1354,6 +1374,17 @@
             const text = document.getElementById('winner-text');
             const sub = document.getElementById('winner-sub');
 
+            if (gameMode === 'local') {
+                const winnerName = winner === 'white' ? 'Beyaz' : 'Siyah';
+                text.textContent = `${winnerName} Kazandı!`;
+                sub.textContent = `${winnerName} piyonu hedefine ulaştı.`;
+                setTimeout(() => {
+                    overlay.classList.add('show');
+                    launchConfetti();
+                }, 400);
+                return;
+            }
+
             const youWon = winner === myColor;
             text.textContent = youWon ? 'Kazandın!' : 'Kaybettin!';
             if (gameMode === 'ai') {
@@ -1420,7 +1451,8 @@
             bm.classList.toggle('active', state.mode === 'move');
             bw.classList.toggle('active', state.mode === 'wall');
             document.getElementById('orient-buttons').style.display = state.mode === 'wall' ? 'flex' : 'none';
-            const noWalls = state.wallCounts[myColor] <= 0;
+            const activePlayer = gameMode === 'local' ? state.turn : myColor;
+            const noWalls = (state.wallCounts[activePlayer] || 0) <= 0;
             bw.disabled = noWalls || !isMyTurn();
             if (noWalls && state.mode === 'wall') setMode('move');
         }
@@ -1494,8 +1526,13 @@
             const cb = document.getElementById('card-black');
             cw.classList.toggle('active', state.turn === 'white' && !state.gameOver);
             cb.classList.toggle('active', state.turn === 'black' && !state.gameOver);
-            cw.classList.toggle('you-indicator', myColor === 'white');
-            cb.classList.toggle('you-indicator', myColor === 'black');
+            if (gameMode === 'local') {
+                cw.classList.remove('you-indicator');
+                cb.classList.remove('you-indicator');
+            } else {
+                cw.classList.toggle('you-indicator', myColor === 'white');
+                cb.classList.toggle('you-indicator', myColor === 'black');
+            }
         }
 
         function renderWallIndicators() {
@@ -1514,9 +1551,15 @@
         function renderTurnBadge() {
             const el = document.getElementById('turn-text');
             if (state.gameOver) {
-                el.innerHTML = state.winner === myColor ? 'Kazandın!' : 'Kaybettin!';
+                if (gameMode === 'local') {
+                    el.innerHTML = state.winner === 'white' ? 'Beyaz<br>Kazandı!' : 'Siyah<br>Kazandı!';
+                } else {
+                    el.innerHTML = state.winner === myColor ? 'Kazandın!' : 'Kaybettin!';
+                }
             } else if (isAIThinking) {
                 el.innerHTML = 'Bilgisayar<br>Düşünüyor';
+            } else if (gameMode === 'local') {
+                el.innerHTML = state.turn === 'white' ? 'Sıra:<br>Beyaz\'da' : 'Sıra:<br>Siyah\'ta';
             } else if (isMyTurn()) {
                 el.innerHTML = 'Senin<br>Sıran';
             } else {
