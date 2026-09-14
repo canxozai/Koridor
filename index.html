@@ -798,12 +798,13 @@
         /* ═══════════════════ GAME STATE ═══════════════════ */
         let state = createInitialState();
 
-        function createInitialState() {
+        function createInitialState(startingTurn) {
+            const turn = startingTurn || (Math.random() < 0.5 ? 'white' : 'black');
             return {
                 pawns: { white: { row: 8, col: 4 }, black: { row: 0, col: 4 } },
                 walls: [],
                 wallCounts: { white: WALLS_PER_PLAYER, black: WALLS_PER_PLAYER },
-                turn: 'white',
+                turn: turn,
                 mode: 'move',
                 wallOrientation: 'horizontal',
                 gameOver: false,
@@ -949,10 +950,11 @@
             });
 
             if (isHost) {
-                // Host sends start signal
+                // Host sends start signal with randomly chosen starting turn
                 conn.on('open', () => {
-                    conn.send({ type: 'start', color: 'black' });
-                    startGame();
+                    const startingTurn = Math.random() < 0.5 ? 'white' : 'black';
+                    conn.send({ type: 'start', color: 'black', startingTurn });
+                    startGame(startingTurn);
                 });
             }
         }
@@ -961,7 +963,7 @@
             switch (data.type) {
                 case 'start':
                     myColor = data.color;
-                    startGame();
+                    startGame(data.startingTurn);
                     break;
 
                 case 'move':
@@ -988,11 +990,13 @@
                     break;
 
                 case 'rematch':
-                    state = createInitialState();
+                    const remTurn = data.startingTurn || (Math.random() < 0.5 ? 'white' : 'black');
+                    state = createInitialState(remTurn);
                     document.getElementById('game-over').classList.remove('show');
                     const confetti = document.getElementById('confetti-canvas');
                     if (confetti) confetti.remove();
                     render();
+                    showStatus(state.turn === 'white' ? 'Oyuna Beyaz başlıyor!' : 'Oyuna Siyah başlıyor!');
                     break;
             }
         }
@@ -1010,8 +1014,8 @@
         }
 
         /* ═══════════════════ START GAME ═══════════════════ */
-        function startGame() {
-            state = createInitialState();
+        function startGame(startingTurn) {
+            state = createInitialState(startingTurn);
 
             if (aiTimer) { clearTimeout(aiTimer); aiTimer = null; }
             isAIThinking = false;
@@ -1046,6 +1050,13 @@
             createPawns();
             bindGameEvents();
             render();
+
+            showStatus(state.turn === 'white' ? 'Oyuna Beyaz başlıyor!' : 'Oyuna Siyah başlıyor!');
+
+            // If it is AI's turn to start, trigger AI move
+            if (gameMode === 'ai' && state.turn === aiColor && !state.gameOver) {
+                triggerAIMove();
+            }
         }
 
         /* ═══════════════════ BOARD CREATION ═══════════════════ */
@@ -1113,9 +1124,11 @@
                     startGame();
                 } else {
                     if (conn && conn.open) {
-                        conn.send({ type: 'rematch' });
-                        state = createInitialState();
+                        const newTurn = Math.random() < 0.5 ? 'white' : 'black';
+                        conn.send({ type: 'rematch', startingTurn: newTurn });
+                        state = createInitialState(newTurn);
                         render();
+                        showStatus(state.turn === 'white' ? 'Oyuna Beyaz başlıyor!' : 'Oyuna Siyah başlıyor!');
                     } else {
                         returnToLobby();
                     }
@@ -1171,6 +1184,7 @@
             if (k === 'm' || e.key === '1') { e.preventDefault(); setMode('move'); }
             else if (k === 'w' || e.key === '2') { e.preventDefault(); setMode('wall'); }
             else if (k === 'r') { e.preventDefault(); setOrientation(state.wallOrientation === 'horizontal' ? 'vertical' : 'horizontal'); }
+            else if (k === 'n') { e.preventDefault(); returnToLobby(); }
         }
 
         function getNearestIntersection(x, y) {
