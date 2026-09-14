@@ -949,13 +949,24 @@
                 showStatus('Rakip bağlantısı kesildi!');
             });
 
+            conn.on('error', (err) => {
+                console.error('Peer connection error:', err);
+                showStatus('Bağlantı hatası!');
+            });
+
             if (isHost) {
-                // Host sends start signal with randomly chosen starting turn
-                conn.on('open', () => {
+                const sendStartSignal = () => {
                     const startingTurn = Math.random() < 0.5 ? 'white' : 'black';
                     conn.send({ type: 'start', color: 'black', startingTurn });
                     startGame(startingTurn);
-                });
+                };
+
+                // Check if connection is already open to avoid PeerJS open race condition
+                if (conn.open) {
+                    sendStartSignal();
+                } else {
+                    conn.on('open', sendStartSignal);
+                }
             }
         }
 
@@ -967,49 +978,100 @@
                     break;
 
                 case 'move':
-                    // Opponent moved their pawn
+                    // Opponent moved their pawn - sync turn explicitly
                     state.pawns[data.player].row = data.row;
                     state.pawns[data.player].col = data.col;
+                    if (data.nextTurn) {
+                        state.turn = data.nextTurn;
+                    } else {
+                        switchTurn();
+                    }
+                    if (data.pawns) state.pawns = data.pawns;
+                    if (data.walls) state.walls = data.walls;
+                    if (data.wallCounts) state.wallCounts = data.wallCounts;
                     if (checkWin()) return;
-                    switchTurn();
                     render();
                     break;
 
                 case 'wall':
-                    // Opponent placed a wall
-                    state.walls.push({
-                        row: data.row, col: data.col,
-                        orientation: data.orientation,
-                        player: data.player
-                    });
-                    state.wallCounts[data.player]--;
+                    // Opponent placed a wall - sync turn explicitly
+                    const alreadyExists = state.walls.some(w => w.row === data.row && w.col === data.col && w.orientation === data.orientation);
+                    if (!alreadyExists) {
+                        state.walls.push({
+                            row: data.row, col: data.col,
+                            orientation: data.orientation,
+                            player: data.player
+                        });
+                        state.wallCounts[data.player]--;
+                    }
+                    if (data.nextTurn) {
+                        state.turn = data.nextTurn;
+                    } else {
+                        switchTurn();
+                    }
+                    if (data.walls) state.walls = data.walls;
+                    if (data.wallCounts) state.wallCounts = data.wallCounts;
                     if (checkWin()) return;
-                    switchTurn();
                     state.mode = 'move';
                     render();
                     break;
 
+                case 'rematch_request':
+                    // Host receives rematch request and authoritatively starts rematch
+                    if (isHost && conn && conn.open) {
+                        const newTurn = Math.random() < 0.5 ? 'white' : 'black';
+                        conn.send({ type: 'rematch', startingTurn: newTurn });
+                        startRematch(newTurn);
+                    }
+                    break;
+
                 case 'rematch':
-                    const remTurn = data.startingTurn || (Math.random() < 0.5 ? 'white' : 'black');
-                    state = createInitialState(remTurn);
-                    document.getElementById('game-over').classList.remove('show');
-                    const confetti = document.getElementById('confetti-canvas');
-                    if (confetti) confetti.remove();
-                    render();
-                    showStatus(state.turn === 'white' ? 'Oyuna Beyaz başlıyor!' : 'Oyuna Siyah başlıyor!');
+                    startRematch(data.startingTurn);
                     break;
             }
         }
 
-        function sendMove(player, row, col) {
-            if (conn && conn.open) {
-                conn.send({ type: 'move', player, row, col });
+        function startRematch(newTurn) {
+            const turn = newTurn || (Math.random() < 0.5 ? 'white' : 'black');
+            state = createInitialState(turn);
+            document.getElementById('game-over').classList.remove('show');
+            const confetti = document.getElementById('confetti-canvas');
+            if (confetti) confetti.remove();
+            render();
+            showStatus(state.turn === 'white' ? 'Oyuna Beyaz başlıyor!' : 'Oyuna Siyah başlıyor!');
+            if (gameMode === 'ai' && state.turn === aiColor && !state.gameOver) {
+                triggerAIMove();
             }
         }
 
-        function sendWall(player, row, col, orientation) {
+        function sendMove(player, row, col, nextTurn) {
             if (conn && conn.open) {
-                conn.send({ type: 'wall', player, row, col, orientation });
+                conn.send({
+                    type: 'move',
+                    player,
+                    row,
+                    col,
+                    nextTurn,
+                    pawns: state.pawns,
+                    walls: state.walls,
+                    wallCounts: state.wallCounts
+                });
+            }
+        }
+
+        function sendWall(player, row, col, orientation, nextTurn) {
+            if (conn && conn.open) {
+                conn.send({
+                    type: 'wall',
+                    player,
+                    row,
+                    col,
+                    orientation,
+                    nextTurn,
+                    pawns: state.pawns,
+                    walls: state.walls,
+                    wallCounts: state.wallCounts
+                });
             }
         }
 
@@ -1121,14 +1183,17 @@
                 const confetti = document.getElementById('confetti-canvas');
                 if (confetti) confetti.remove();
                 if (gameMode === 'ai') {
-                    startGame();
+                    startRematch();
                 } else {
                     if (conn && conn.open) {
-                        const newTurn = Math.random() < 0.5 ? 'white' : 'black';
-                        conn.send({ type: 'rematch', startingTurn: newTurn });
-                        state = createInitialState(newTurn);
-                        render();
-                        showStatus(state.turn === 'white' ? 'Oyuna Beyaz başlıyor!' : 'Oyuna Siyah başlıyor!');
+                        if (isHost) {
+                            const newTurn = Math.random() < 0.5 ? 'white' : 'black';
+                            conn.send({ type: 'rematch', startingTurn: newTurn });
+                            startRematch(newTurn);
+                        } else {
+                            conn.send({ type: 'rematch_request' });
+                            showStatus('Yeniden başlama isteği gönderildi...');
+                        }
                     } else {
                         returnToLobby();
                     }
@@ -1166,18 +1231,36 @@
             }
         }
 
+        let lastPreviewKey = null;
         function onBoardMouseMove(e) {
-            if (state.mode !== 'wall' || state.gameOver || !isMyTurn()) return;
+            if (state.mode !== 'wall' || state.gameOver || !isMyTurn()) {
+                if (lastPreviewKey !== null) {
+                    clearWallPreview();
+                    lastPreviewKey = null;
+                }
+                return;
+            }
             const rect = boardEl.getBoundingClientRect();
             const pos = getNearestIntersection(e.clientX - rect.left, e.clientY - rect.top);
-            clearWallPreview();
-            if (pos) {
-                const valid = canPlaceWall(pos.row, pos.col, state.wallOrientation);
-                showWallPreview(pos.row, pos.col, state.wallOrientation, valid);
+            if (!pos) {
+                if (lastPreviewKey !== null) {
+                    clearWallPreview();
+                    lastPreviewKey = null;
+                }
+                return;
             }
+            const key = `${pos.row},${pos.col},${state.wallOrientation}`;
+            if (key === lastPreviewKey) return;
+            lastPreviewKey = key;
+            clearWallPreview();
+            const valid = canPlaceWall(pos.row, pos.col, state.wallOrientation);
+            showWallPreview(pos.row, pos.col, state.wallOrientation, valid);
         }
 
-        function onBoardMouseLeave() { clearWallPreview(); }
+        function onBoardMouseLeave() {
+            clearWallPreview();
+            lastPreviewKey = null;
+        }
 
         function onKeyDown(e) {
             const k = e.key.toLowerCase();
@@ -1209,13 +1292,15 @@
             state.pawns[state.turn].col = c;
             clearStatus();
 
+            const nextTurn = state.turn === 'white' ? 'black' : 'white';
+
             // Send move to opponent if online
             if (gameMode === 'online') {
-                sendMove(state.turn, r, c);
+                sendMove(state.turn, r, c, nextTurn);
             }
 
             if (checkWin()) return;
-            switchTurn();
+            state.turn = nextTurn;
             render();
 
             if (gameMode === 'ai' && state.turn === aiColor && !state.gameOver) {
@@ -1234,13 +1319,16 @@
             state.wallCounts[state.turn]--;
             clearStatus();
             clearWallPreview();
+            lastPreviewKey = null;
+
+            const nextTurn = state.turn === 'white' ? 'black' : 'white';
 
             // Send wall to opponent if online
             if (gameMode === 'online') {
-                sendWall(state.turn, ir, ic, orientation);
+                sendWall(state.turn, ir, ic, orientation, nextTurn);
             }
 
-            switchTurn();
+            state.turn = nextTurn;
             state.mode = 'move';
             render();
 
@@ -1504,10 +1592,16 @@
             const nw = { row: ir, col: ic, orientation, player };
             if (wallConflicts(nw)) return false;
             state.walls.push(nw);
-            const ok = hasPathToGoal(state.pawns.white.row, state.pawns.white.col, 0)
-                    && hasPathToGoal(state.pawns.black.row, state.pawns.black.col, 8);
-            state.walls.pop();
-            return ok;
+            try {
+                const ok = hasPathToGoal(state.pawns.white.row, state.pawns.white.col, 0)
+                        && hasPathToGoal(state.pawns.black.row, state.pawns.black.col, 8);
+                return ok;
+            } catch (err) {
+                console.error('canPlaceWall check error:', err);
+                return false;
+            } finally {
+                state.walls.pop();
+            }
         }
 
         function wallConflicts(nw) {
@@ -1521,10 +1615,13 @@
         }
 
         function hasPathToGoal(startRow, startCol, goalRow) {
+            if (startRow === goalRow) return true;
             const visited = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
             const queue = [[startRow, startCol]];
             visited[startRow * BOARD_SIZE + startCol] = 1;
-            while (queue.length > 0) {
+            let iterations = 0;
+            while (queue.length > 0 && iterations < 200) {
+                iterations++;
                 const [r, c] = queue.shift();
                 if (r === goalRow) return true;
                 for (const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
@@ -1542,14 +1639,17 @@
 
         /* ═══════════════════ AI LOGIC & PATHFINDING ═══════════════════ */
         function getShortestPath(startRow, startCol, goalRow) {
+            if (startRow === goalRow) return [{ row: startRow, col: startCol }];
             const visited = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
             const parent = new Int16Array(BOARD_SIZE * BOARD_SIZE).fill(-1);
             const queue = [[startRow, startCol]];
             const startIdx = startRow * BOARD_SIZE + startCol;
             visited[startIdx] = 1;
             let targetIdx = -1;
+            let iterations = 0;
 
-            while (queue.length > 0) {
+            while (queue.length > 0 && iterations < 200) {
+                iterations++;
                 const [r, c] = queue.shift();
                 if (r === goalRow) {
                     targetIdx = r * BOARD_SIZE + c;
@@ -1571,7 +1671,9 @@
 
             const path = [];
             let curr = targetIdx;
-            while (curr !== -1) {
+            let backtrackSteps = 0;
+            while (curr !== -1 && backtrackSteps < 100) {
+                backtrackSteps++;
                 path.unshift({ row: Math.floor(curr / BOARD_SIZE), col: curr % BOARD_SIZE });
                 if (curr === startIdx) break;
                 curr = parent[curr];
@@ -1590,37 +1692,48 @@
 
             if (aiTimer) clearTimeout(aiTimer);
             aiTimer = setTimeout(() => {
-                if (state.gameOver || gameMode !== 'ai' || state.turn !== aiColor) {
+                try {
+                    if (state.gameOver || gameMode !== 'ai' || state.turn !== aiColor) {
+                        return;
+                    }
+
+                    let move = null;
+                    try {
+                        move = getAIMove(aiDifficulty);
+                    } catch (e) {
+                        console.error('AI calculation error, using fallback move:', e);
+                    }
+
+                    if (!move) {
+                        const validMoves = getValidMoves(aiColor);
+                        if (validMoves.length > 0) {
+                            move = { type: 'move', row: validMoves[0][0], col: validMoves[0][1] };
+                        }
+                    }
+
+                    if (move) {
+                        if (move.type === 'move') {
+                            state.pawns[aiColor].row = move.row;
+                            state.pawns[aiColor].col = move.col;
+                        } else if (move.type === 'wall') {
+                            state.walls.push({
+                                row: move.row,
+                                col: move.col,
+                                orientation: move.orientation,
+                                player: aiColor
+                            });
+                            state.wallCounts[aiColor]--;
+                        }
+                    }
+
+                    if (checkWin()) return;
+                    switchTurn();
+                } catch (fatalErr) {
+                    console.error('Fatal AI error:', fatalErr);
+                } finally {
                     isAIThinking = false;
                     render();
-                    return;
                 }
-
-                const move = getAIMove(aiDifficulty);
-                isAIThinking = false;
-
-                if (!move) {
-                    const validMoves = getValidMoves(aiColor);
-                    if (validMoves.length > 0) {
-                        state.pawns[aiColor].row = validMoves[0][0];
-                        state.pawns[aiColor].col = validMoves[0][1];
-                    }
-                } else if (move.type === 'move') {
-                    state.pawns[aiColor].row = move.row;
-                    state.pawns[aiColor].col = move.col;
-                } else if (move.type === 'wall') {
-                    state.walls.push({
-                        row: move.row,
-                        col: move.col,
-                        orientation: move.orientation,
-                        player: aiColor
-                    });
-                    state.wallCounts[aiColor]--;
-                }
-
-                if (checkWin()) return;
-                switchTurn();
-                render();
             }, 500);
         }
 
@@ -1668,7 +1781,9 @@
                             bestMoves.push([mr, mc]);
                         }
                     }
-                    const pick = bestMoves[Math.floor(Math.random() * bestMoves.length)];
+                    const pick = (bestMoves.length > 0)
+                        ? bestMoves[Math.floor(Math.random() * bestMoves.length)]
+                        : validMoves[0];
                     return { type: 'move', row: pick[0], col: pick[1] };
                 } else {
                     const pick = validMoves[Math.floor(Math.random() * validMoves.length)];
@@ -1687,9 +1802,14 @@
                             for (const o of ['horizontal', 'vertical']) {
                                 if (!canPlaceWall(r, c, o, aiColor)) continue;
                                 state.walls.push({ row: r, col: c, orientation: o, player: aiColor });
-                                const newHumanDist = getPathDistance(oppR, oppC, 0);
-                                const newMyDist = getPathDistance(myR, myC, 8);
-                                state.walls.pop();
+                                let newHumanDist = 999;
+                                let newMyDist = 999;
+                                try {
+                                    newHumanDist = getPathDistance(oppR, oppC, 0);
+                                    newMyDist = getPathDistance(myR, myC, 8);
+                                } finally {
+                                    state.walls.pop();
+                                }
 
                                 const delay = newHumanDist - currHumanDist;
                                 const selfCost = newMyDist - currMyDist;
@@ -1725,7 +1845,9 @@
                         bestMoves.push([mr, mc]);
                     }
                 }
-                const pick = bestMoves[Math.floor(Math.random() * bestMoves.length)];
+                const pick = (bestMoves.length > 0)
+                    ? bestMoves[Math.floor(Math.random() * bestMoves.length)]
+                    : validMoves[0];
                 return { type: 'move', row: pick[0], col: pick[1] };
             }
 
@@ -1765,9 +1887,14 @@
                     for (const o of ['horizontal', 'vertical']) {
                         if (!canPlaceWall(ir, ic, o, aiColor)) continue;
                         state.walls.push({ row: ir, col: ic, orientation: o, player: aiColor });
-                        const newHumanDist = getPathDistance(oppR, oppC, 0);
-                        const newMyDist = getPathDistance(myR, myC, 8);
-                        state.walls.pop();
+                        let newHumanDist = 999;
+                        let newMyDist = 999;
+                        try {
+                            newHumanDist = getPathDistance(oppR, oppC, 0);
+                            newMyDist = getPathDistance(myR, myC, 8);
+                        } finally {
+                            state.walls.pop();
+                        }
 
                         const humanDelay = newHumanDist - currHumanDist;
                         const myPenalty = newMyDist - currMyDist;
@@ -1791,7 +1918,7 @@
                 }
             }
 
-            return bestMove || { type: 'move', row: validMoves[0][0], col: validMoves[0][1] };
+            return bestMove || (validMoves.length > 0 ? { type: 'move', row: validMoves[0][0], col: validMoves[0][1] } : null);
         }
 
         /* ═══════════════════ CONFETTI ═══════════════════ */
